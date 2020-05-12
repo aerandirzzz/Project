@@ -1,0 +1,86 @@
+### The cleaned full data was stored in path3 dataframe. Cleaned data for analysis was stored in path5 dataframe.
+
+library(ggplot2) # for stacked bar plot
+library(dplyr) # for data manipulation
+library(naniar) # for vis_miss().
+library(survey) # for svyglm().
+library(mice) # for multiple imputation
+library(effects) # for allEffects()
+library(jtools) # for summ().
+library(huxtable) # for export_summ()
+library(flextable) # for export_summ()
+library(officer) # for export_summ()
+
+### MISSING VALUE EXPLORATION ###
+# The number of persons who used cigarettes but the menthol value was missing accounted for only 0.9%.
+weird = path3[(path3$cigs=="established everyday or some days")&(is.na(path3$menthol)),]
+
+# For menhtol covariate: to change NA to 0 for valid cases. 
+path3$menthol[path3$cigs=="none"]<-0 
+
+# missing values visualization
+missanal <- path3[!(path3$wave==1),]
+dropmiss <- c("VARPSU", "VARSTRAT", "R01_A_PWGT.y")
+missanal1 <- missanal[,!(names(missanal)%in%dropmiss)]
+gg_miss_var(missanal1, show_pct = TRUE)+labs(y="who is missing? (%)")
+vis_miss(missanal1)
+
+### DATA VISUALIZATION ###
+# Stacked Bar Chart
+vis1 <- subset(path1, cigs=="established everyday or some days") # select smokers
+vis2 <- vis1[!is.na(vis1$menthol),] # delete NA in menthol
+vis2$menthol <- as.factor(vis2$menthol)
+vis2$cigs<-1
+vis2$menthol <- ifelse(vis2$menthol==1, "yes", "no")
+ggplot(vis2, aes(fill=menthol, 
+                 y=cigs, 
+                 x=as.factor(wave))) + 
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_manual(values = c("cornflowerblue", "darksalmon"))+
+  labs(x = "wave", y = "number of smokers")
+
+# Grouped Bar Chart
+path5$outcome <- "cig use"
+path5$outcome[path5$cigs=="established everyday or some days"&path5$ecigs=="everyday or some days"]<-"dual use"
+path5$outcome[path5$cigs=="none"&path5$ecigs=="everyday or some days"]<-"exclusive e-cig use"
+path5$outcome[path5$cigs=="none"&path5$ecigs=="none"]<-"non smoker"
+path5$outcome <- as.factor(path5$outcome)
+
+vis4 <- path5 %>% count(wave, outcome)
+
+ggplot(vis4,aes(fill=outcome, y=n, x=wave))+
+  geom_bar(position="dodge", stat="identity")+ 
+  labs(y="number of persons", x="wave")+
+  scale_fill_manual(values = c("burlywood", "darkcyan", 
+                               "coral", "darkolivegreen3"))
+
+
+### SURVIVAL ANALYSIS - GLM ###
+# Final model
+path.design <- svydesign(
+                         data = path5,
+                         id = ~VARPSU,
+                         weights = ~R01_A_PWGT.y,
+                         strata = ~VARSTRAT,
+                         nest = TRUE
+                         )
+# Results for any start of e-cigarette use
+model <- svyglm(ex.ecigs~wave+prev.menthol+gender+agegrp+
+                  RE+educat+income,
+                family=binomial(link="cloglog"),
+                design=path.design)
+summary(model)
+jtools::summ(model, exp=TRUE, confint = TRUE, digits = 3)
+plot_summs(model, exp = TRUE)
+export_summs(model, exp=TRUE,
+             to.file = "docx",
+             file.name = "glmresults.docx",
+             model.names = "GLM"
+             )
+
+# model for PH assumption check
+model1 <- svyglm(ex.ecigs ~ wave+prev.menthol+gender+agegrp+
+                   RE+educat+income+wave*prev.menthol,
+                 family=binomial(link="cloglog"),
+                 design=path.design)
+summary(model1)

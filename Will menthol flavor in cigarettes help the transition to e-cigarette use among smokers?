@@ -1,4 +1,10 @@
-### The cleaned full data was stored in path3 dataframe. Cleaned data for analysis was stored in path5 dataframe.
+This file contains R code for blog: Will menthol flavor in cigarettes help the transition to e-cigarette use among smokers? 
+blog link: https://medium.com/@zjiaqi/will-menthol-flavor-in-cigarettes-help-the-transition-to-e-cigarette-use-among-smokers-7320d2478f51
+
+The cleaned full data was stored in path3 dataframe. Cleaned data for analysis was stored in path5 dataframe.
+
+
+R code: 
 
 library(ggplot2) # for stacked bar plot
 library(dplyr) # for data manipulation

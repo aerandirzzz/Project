@@ -1,0 +1,419 @@
+cancer0 <- read.csv("HNSCC full data.csv", na.strings = c("")) #1642
+cancer <- cancer0[!is.na(cancer0$rtime), ] #1641
+
+library(ggplot2)
+library(dplyr)
+
+### check missing values conditions for each column
+# note: some missing values are coded as " ", or "missing".
+dropcheckmiss <- c("idnum", "enrollyear", "stime", "rtime", "bmi", "how_old")
+checkmiss <- cancer[,!(names(cancer)%in%dropcheckmiss)]
+apply(checkmiss, 2, unique)
+
+# NA occurs on race, highest_ed, marital_status, ace_overall_score,
+# smoker, drinker, p16, hpvstat, cod, specific ace values.
+# hpvstat=="invalid/missing", cod=="Dead, cause unknown"
+
+
+#--------STEP.1 DATA MANIPULATION--------#
+
+### re-define Cause of Death column
+cancer$interval <- cancer$stime - cancer$rtime # verified: no negative values
+cancer$cod[(cancer$interval<=100)&(cancer$cod=="Dead, other cause")]<-"Dead due to Malignancy"
+
+### re-define some columns
+cancer_new <- cancer %>% mutate(hpv = ifelse(hpvstat == "Positive", "positive",
+                               ifelse(hpvstat == "Negative", "negative",
+                                      ifelse(p16=="+","positive",
+                                             ifelse(p16=="-", "negative", NA)))),
+                  education = ifelse(highest_ed %in% c("4 year college degree",
+                                                        "more than college",
+                                                        "some college"), "college",
+                                     ifelse(highest_ed %in% c("high school/ged",
+                                                   "less than hs"), "less than college", NA)),
+                  race_new = ifelse(race %in% c("AMERICAN INDIAN / ESKIMO / ALEUTIAN",
+                                                "ASIAN",
+                                                "OTHER"), "other",
+                                    ifelse(race == "EUROPEAN AMERICAN / WHITE", "white",
+                                           ifelse(race=="AFRICAN AMERICAN / BLACK `", "black", NA))),
+                  marriage = ifelse(marital_status %in% c("Divorced", "Separated", "Widowed"), "not in marriage",
+                                    ifelse(marital_status == "Never Married", "single", 
+                                           ifelse(marital_status == "Married", "married", NA)))
+                    ) %>% 
+                          rename(age = how_old)
+
+# Verify the above code:
+#cancer_new %>% count(marital_status)
+#cancer_new %>% count(marriage)
+                          
+
+#--------STEP.2 MISSING VALUE EXPLORATION--------#
+library(naniar)
+# General check
+vis_miss(cancer_new)
+
+nacheck <- cancer_new %>%
+  select(idnum, age, gender, race_new, education, 
+         marriage, stage, ace_overall_score, 
+         smoker, drinker, hpv, site, treatinit)
+vis_miss(nacheck)
+gg_miss_var(nacheck)
+gg_miss_upset(nacheck)
+
+#--------STEP.3 SURVIVAL PLOT--------#
+library(survival) # for survfit() and ggsurvplot().
+library(survminer) # for ggcompetingrisks().
+library(cmprsk) # for cuminc().
+library(wesanderson) # color palette.
+
+# to add disease specific survival outcome (dss)
+cancer_new$dss <- rep(0, nrow(cancer_new))
+cancer_new$dss[cancer_new$cod=="Dead due to Malignancy"]<-1
+
+#GrandBudapest1 platte: "#F1BB7B" "#FD6467" "#5B1A18" "#D67236"
+
+
+### Overall Survival Plot
+
+OSobj <- survfit(Surv(stime, deathstatus)~1, data=cancer_new)
+ggsurvplot(OSobj, data=cancer_new, 
+           pval=FALSE, 
+           risk.table = TRUE, 
+           xlim = c(0,145))
+
+OSinsulin <- survfit(Surv(stime, deathstatus)~Insulin, data=cancer_new)
+ggsurvplot(OSinsulin, data=cancer_new, 
+           pval=FALSE, 
+           risk.table = TRUE, 
+           xlim = c(0,145),
+           palette = c("#FD6467", "#F1BB7B"))
+
+
+OSaspirin <- survfit(Surv(stime, deathstatus)~Aspirin, data=cancer_new)
+ggsurvplot(OSaspirin, data=cancer_new, 
+           pval=FALSE, 
+           risk.table = TRUE, 
+           xlim = c(0,145),
+           palette = c("#5B1A18", "#D67236"))
+
+### Disease-specific Survival: Cumulative Incidence Plot
+
+# Alternative code:
+#dssinsulin <- survfit(Surv(stime, dss)~Insulin, data=cancer_new)
+#plot(dssinsulin, fun = function(x){1-x})
+
+stime <- cancer_new$stime
+dss <- cancer_new$dss
+Insulin <- cancer_new$Insulin
+dssinsulin1 <- cuminc(ftime=stime, fstatus=dss, group=Insulin)
+ggcompetingrisks(dssinsulin1, 
+                 palette = "#FD6467",
+                 # the defualt is multiple panels = TRUE.
+                 multiple_panels = FALSE) + 
+  # to add the grid into the background.
+  theme_bw() +
+  # adjust the tick limits and breaks of y axis.
+  scale_y_continuous(limits = c(0, 0.55), breaks = seq(0, 0.55, 0.1)) +
+  # to change the group name.
+  scale_linetype_manual(values=1:2,labels=c("no Insulin","Insulin")) + 
+  # to adjust the space for group legend.
+  guides(col="none")
+
+Aspirin <- cancer_new$Aspirin
+dssaspirin <- cuminc(ftime = stime, fstatus = dss, group = Aspirin)
+ggcompetingrisks(dssaspirin,
+                 palette = "#5B1A18",
+                 multiple_panels = FALSE) +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, 0.55), breaks = seq(0, 0.55, 0.1)) +
+  scale_linetype_manual(values=1:2,labels=c("no Aspirin","Aspirin")) +
+  guides(col="none")
+
+
+### Recurrence Free Survival - Cumulative Incidence Plot
+
+
+rtime <- cancer_new$rtime
+recurstatus <- cancer_new$recurstatus
+
+# Insulin
+rfsinsulin <- cuminc(ftime = rtime, fstatus = recurstatus, group = Insulin)
+ggcompetingrisks(rfsinsulin,
+                 palette = "#F1BB7B",
+                 multiple_panels = FALSE) +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, 0.6), breaks = seq(0, 0.6, 0.1)) +
+  scale_linetype_manual(values=1:2,labels=c("no Insulin","Insulin")) +
+  guides(col="none")
+
+# Aspirin
+rfsaspirin <- cuminc(ftime = rtime, fstatus = recurstatus, group = Aspirin)
+ggcompetingrisks(rfsaspirin,
+                 palette = "#D67236",
+                 multiple_panels = FALSE) +
+  theme_bw() +
+  scale_y_continuous(limits = c(0, 0.6), breaks = seq(0, 0.6, 0.1)) +
+  scale_linetype_manual(values=1:2,labels=c("no Aspirin","Aspirin")) +
+  guides(col="none")
+
+
+write.csv(cancer_new, file = "cancer_new.csv")
+
+cancer_new <- read.csv("cancer_new.csv") #1641
+
+### STEP.4 MULTIPLE IMPUTATION ###
+library(mice)
+library(dplyr)
+
+cancer_new$deathstatus[cancer_new$deathstatus==1]<-2
+cancer_new$deathstatus[cancer_new$deathstatus==0]<-1
+cancer_new$recurstatus[cancer_new$recurstatus==1]<-2
+cancer_new$recurstatus[cancer_new$recurstatus==0]<-1
+
+datana <- cancer_new %>% 
+  select(c("idnum", "age", "gender", "race_new", "education",
+           "marriage", "stage", "ace_overall_score", "smoker",
+           "drinker", "hpv", "deathstatus", "recurstatus", "dss", 
+           "stime", "rtime", "site", "treatinit", 
+           "Aspirin", "Insulin", "ace_endo_dm"))
+
+# convert columns to factor type.
+columnnames <- c("gender", "race_new", "education","marriage", 
+                 "stage", "ace_overall_score", "smoker","drinker", 
+                 "hpv", "site", "treatinit", "Aspirin", "Insulin")
+cancer.na <- datana %>% mutate_at(columnnames, as.factor) 
+
+# multiple imputation
+cancer.mi <- mice(data=cancer.na,
+                  m=5,
+                  method = c("", "norm", "logreg", "polyreg",
+                             "logreg", "polyreg", "polyreg", "polyreg",
+                             "polyreg", "polyreg", "logreg", "", "",
+                             "", "norm", "norm", "polyreg",
+                             "polyreg", "logreg", "logreg", ""),
+                  print = FALSE,
+                  seed = 123
+                  )
+
+### STEP.5 ADJUST SITE COLUMN ###
+# to vertically concatenate imputed datasets
+# include=TRUE ensures the step of converting the manipulated data back to mi object.
+milong <- complete(cancer.mi, action="long", include=TRUE)
+
+milong$site_new[milong$site=="Larynx"] <- "Larynx"
+milong$site_new[milong$site=="Oral Cavity"] <- "Oral Cavity"
+milong$site_new[(milong$site=="Oropharynx")&(milong$hpv=="positive")]<-"Oropharynx hpv+"
+milong$site_new[(milong$site=="Oropharynx")&(milong$hpv=="negative")]<-"Oropharynx hpv-"
+milong$site_new[(milong$site=="Oropharynx")&(is.na(milong$hpv))]<-"Oropharynx"
+milong$site_new[milong$site=="Other (HP or other)"] <- "Other (HP or other)"
+
+# to use as.mids() to convert the manipulated data back to mi object.
+cancer.mi1 <- as.mids(milong)
+
+### STEP.6 COX PH MODEL ###
+
+library(MASS) # for chisq.test()
+library(survival) # for coxph()
+library(survminer) # for ggcoxzph().
+library(gridExtra)
+library(grid)
+library(ggplotify) # for as.grob().
+library(cowplot) # for plot_grid()
+
+### 6.1 CHECK CORRELATION
+
+# check the correlation between site and treatinit using data with na
+# the result shows that X-squared - 890.09, with p-value < 0.01
+# so I decide to leave treatinit variable out to avoid collinearity. 
+tbl <- table(datana$site, datana$treatinit)
+chisq.test(tbl)
+# check the correlation between overall ace score and diabete specific ace score,
+# the result shows that X-squared - 242.24, with p-value < 0.01
+# so I decide to leave overall ace score out to avoid collinearity. 
+tbl1 <- table(datana$ace_endo_dm, datana$ace_overall_score)
+chisq.test(tbl1)
+
+### 6.2 CHECK PH ASSUMPTION
+
+# extract one imputed data out for  PH assumption check
+comp <- complete(cancer.mi1, action=1, include=FALSE)
+
+# 6.2.1 for the Insulin Model
+checkins.fit <- coxph(data = comp,
+  Surv(stime, deathstatus) ~ age + gender + race_new + 
+                     education + marriage + stage + ace_overall_score + 
+                     smoker + drinker + as.factor(site_new) + Insulin)
+testins.ph <- cox.zph(checkins.fit) # site_new is significant
+# note for the code: 
+# ggcoxzph() will return a list of ggplot.If I use ggcoxzph()[10], the return 
+# is still a list of ggplot; if I use ggcoxzph()[[10]], the return is a ggplot.
+# The as.grob() can not be applied on a list. 
+os.ph <- ggcoxzph(testins.ph,
+         point.col = "#FD6467",
+         ylab = "site")[[10]]
+p1 <- as.grob(os.ph)
+
+checkins.fit1 <- coxph(data=comp,
+                   Surv(rtime, dss) ~ age + gender + race_new + 
+                     education + marriage + stage + ace_overall_score + 
+                     smoker + drinker + as.factor(site_new) + Insulin)
+testins1.ph <- cox.zph(checkins.fit1) # marriage is significant
+dss.ph <- ggcoxzph(testins1.ph,
+                 point.col = "#F1BB7B",
+                 ylab = "marriage")[[5]]
+p2 <- as.grob(dss.ph)
+
+checkins.fit2 <- coxph(data=comp,
+                    Surv(rtime, recurstatus) ~ age + gender + race_new + 
+                      education + marriage + stage + ace_overall_score + 
+                      smoker + drinker + as.factor(site_new) + Insulin)
+testins12.ph <- cox.zph(checkins.fit2)
+rfs.ph <- ggcoxzph(testins12.ph,
+                      point.col = "#D67236",
+                      ylab = "stage")[[6]]
+p3 <- as.grob(rfs.ph)
+rfs.ph1 <- ggcoxzph(testins12.ph,
+                       point.col = "#5B1A18",
+                       ylab = "ace_overall_score")[[7]]
+p4 <- as.grob(rfs.ph1)
+
+grid.arrange(p1, p2, p3, p4, nrow=2)
+
+# 6.2.2 for the Aspirin model
+checkasp.fit <- coxph(data = comp,
+                      Surv(stime, deathstatus) ~ age + gender + race_new + 
+                        education + marriage + stage + ace_endo_dm + 
+                        smoker + drinker + as.factor(site_new) + Aspirin)
+testasp.ph <- cox.zph(checkasp.fit)
+os.ph5 <- ggcoxzph(testasp.ph,
+                  point.col = "#FD6467",
+                  ylab = "site")[[10]]
+p5 <- as.grob(os.ph5)
+
+checkasp.fit1 <- coxph(data=comp,
+                       Surv(rtime, dss) ~ age + gender + race_new + 
+                         education + marriage + stage + ace_endo_dm + 
+                         smoker + drinker + as.factor(site_new) + Aspirin)
+testasp1.ph <- cox.zph(checkasp.fit1) # marriage is significant
+dss.ph6 <- ggcoxzph(testasp1.ph,
+                   point.col = "#F1BB7B",
+                   ylab = "marriage")[[5]]
+p6 <- as.grob(dss.ph6)
+
+checkasp.fit2 <- coxph(data=comp,
+                       Surv(rtime, recurstatus) ~ age + gender + race_new + 
+                         education + marriage + stage + ace_endo_dm + 
+                         smoker + drinker + as.factor(site_new) + Aspirin)
+testasp2.ph <- cox.zph(checkasp.fit2)
+rfs.ph7 <- ggcoxzph(testasp2.ph,
+                   point.col = "#D67236",
+                   ylab = "stage")[[6]]
+p7 <- as.grob(rfs.ph7)
+
+# The results are quite similar with the Insulin model, 
+#so I will not display this plot.
+grid.arrange(p5, p6, p7, nrow=2)
+
+
+### 6.3 INSULIN FINAL MODEL ANALYSIS 
+
+# OS
+os_insulin <- with(cancer.mi1, 
+                   coxph(Surv(stime, deathstatus) ~ age + gender + race_new + 
+                           education + marriage + stage + ace_overall_score + 
+                           smoker + drinker + as.factor(site_new) + Insulin))
+sum_os_insulin <- summary(pool(os_insulin))
+
+# DSS
+dss_insulin <- with(cancer.mi1, 
+                   coxph(Surv(stime, dss) ~ age + gender + race_new + 
+                           education + marriage + stage + ace_overall_score + 
+                           smoker + drinker + as.factor(site_new) + Insulin))
+sum_dss_insulin <- summary(pool(dss_insulin))
+
+
+# RFS
+rfs_insulin <- with(cancer.mi1, 
+                    coxph(Surv(rtime, recurstatus) ~ age + gender + race_new + 
+                            education + marriage + stage + ace_overall_score + 
+                            smoker + drinker + as.factor(site_new) + Insulin))
+sum_rfs_insulin <- summary(pool(rfs_insulin))
+
+
+
+
+### 6.4 ASPIRIN FINAL MODEL ANLYIS
+os_asp <- with(cancer.mi1, 
+                   coxph(Surv(stime, deathstatus) ~ age + gender + race_new + 
+                           education + marriage + stage + ace_endo_dm + 
+                           smoker + drinker + as.factor(site_new) + Aspirin))
+sum_os_asp <- summary(pool(os_asp))
+
+dss_asp <- with(cancer.mi1, 
+                    coxph(Surv(stime, dss) ~ age + gender + race_new + 
+                            education + marriage + stage + ace_endo_dm + 
+                            smoker + drinker + as.factor(site_new) + Aspirin))
+sum_dss_asp <- summary(pool(dss_asp))
+
+rfs_asp <- with(cancer.mi1, 
+                coxph(Surv(rtime, recurstatus) ~ age + gender + race_new + 
+                        education + marriage + stage + ace_endo_dm + 
+                        smoker + drinker + as.factor(site_new) + Aspirin))
+sum_rfs_asp <- summary(pool(rfs_asp))
+
+
+
+### 6.5 VISUALIZE THE RESULTS
+# create a table: variable_name, beta, se, p_value
+# variable_name: OS, DSS, RFS.
+
+library(devtools) # to install the ggforestplot package.
+devtools::install_github("NightingaleHealth/ggforestplot")
+library(ggforestplot) # for ggforestplot().
+library(wesanderson)
+
+ins.results <- data.frame(
+  "outcome" = c("OS", "DSS","RFS"),
+  "beta" = c(0.1157, 0.2026, 0.3203),
+  "SE" = c(0.1397, 0.1649, 0.1613),
+  "p value" = c(0.47, 0.22, 0.04)
+)
+
+asp.results <- data.frame(
+  "outcome" = c("OS", "DSS","RFS"),
+  "beta" = c(-0.1221, -0.2691, -0.1152),
+  "SE" = c(0.0832, 0.1001, 0.098),
+  "p value" = c(0.14, 0.007, 0.26)
+)
+
+ins.p <- ggforestplot::forestplot(
+  df = ins.results,
+  name = outcome,
+  estimate = beta,
+  se = SE,
+  pvalue = p.value,
+  psignif = 0.05,
+  logodds = TRUE,
+  colour = outcome,
+  shape = outcome,
+  xlab = "hazard ratio and confidence interval",
+  title = "Insulin"
+)
+ins.grob <- as.grob(ins.p)
+
+asp.p <- ggforestplot::forestplot(
+  df = asp.results,
+  name = outcome,
+  estimate = beta,
+  se = SE,
+  pvalue = p.value,
+  psignif = 0.05,
+  logodds = TRUE,
+  colour = outcome,
+  shape = outcome,
+  xlab = "hazard ratio and confidence interval",
+  title = "Aspirin"
+)
+asp.grob <- as.grob(asp.p)
+
+grid.arrange(ins.grob, asp.grob, nrow = 1)
